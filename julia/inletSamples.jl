@@ -5,6 +5,7 @@ using Distributions
 using IterTools
 using NPZ
 using Printf
+using ZipFile
 
 
 """Convenience types"""
@@ -106,10 +107,9 @@ function sumOfGaussians(sigma::Float64, mu::T, W::Matrix{Float64})::Function whe
 end
 
 
-"""Write a .prof plain text file compatible with ANSYS, describing a static velocity B.C. in 3D"""
-function writeAnsysProfile(path::String, xs::T, vs::T)::Nothing where T <: AbstractRns
-	#Mind the spaces on the string below!
-	content ="""
+"""Generate .prof file contents compatible with ANSYS, describing a static velocity B.C. in 3D"""
+function ansysProfile(xs::T, vs::T)::String where T <: AbstractRns
+	return """
 	((inlet point $(length(xs)))
 	    (x
 	        $(join([@sprintf("%.12E", x[1]) for x in xs], " "))
@@ -129,15 +129,13 @@ function writeAnsysProfile(path::String, xs::T, vs::T)::Nothing where T <: Abstr
 	    (v-z
 	        $(join([@sprintf("%.12E", v[3]) for v in xs], " "))
 	    )
-	)"""
-	write(path, content)
-	return nothing
+	)""" #Spaces in string required for indent!
 end
 
 
 """Sample from an assumed joint distribution for 4D Flow MRI vectors and propagate to a mesh using the RBF method,
 with no-flow B.C.s approximately enforced."""
-function main(meshPath::String, vectorPath::String, outputPathTemp::String, sigma::Float64, numSamples::Int64)::Nothing
+function main(meshPath::String, vectorPath::String, outputPath::String, sigma::Float64, numSamples::Int64)::Nothing
 	vectorField = npzread(vectorPath)
 	x = collect(eachcol(vectorField[1:3,:])) #positions
 	n_x = length(x)
@@ -158,9 +156,12 @@ function main(meshPath::String, vectorPath::String, outputPathTemp::String, sigm
 	ws = T * reshape(hcat(mean(rho_v), rand(rho_v, numSamples)), n_x, :) #RBF weights for each component of each sample
 	vs = gaussQuadrature(mesh, sumOfGaussians(r, [x; b], ws), Vector{Float64}) ./ areas(mesh) #mean velocity for each component of each sample on each cell
 
+	zip = ZipFile.Writer(outputPath)	
 	for (i, rng) in enumerate([k:k+2 for k in 1:3:3*(numSamples+1)])
-		writeAnsysProfile(replace(outputPathTemp, "%g"=>i-1), c, getindex.(vs, Ref(rng)))
+		profile = ZipFile.addfile(zip, "$(i).prof")
+		write(profile, ansysProfile(c, getindex.(vs, Ref(rng))))
 	end
+	close(zip)
 end
 
 
