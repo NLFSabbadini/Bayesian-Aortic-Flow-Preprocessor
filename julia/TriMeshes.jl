@@ -1,4 +1,4 @@
-#Simple module for representing, creating and manipulating triangular meshes in 3D Cartesian space
+#Simple module for representing, creating/manipulating and performing basic computational geometry on triangular meshes in 3D Cartesian space
 module TriMeshes
 
 
