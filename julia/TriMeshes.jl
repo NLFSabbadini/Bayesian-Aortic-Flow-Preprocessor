@@ -1,4 +1,4 @@
-#Simple module for representing, creating/manipulating and performing basic computational geometry on triangular meshes in 3D Cartesian space
+#Simple module for representing, creating and manipulating triangular meshes in 3D Cartesian space
 module TriMeshes
 
 
@@ -157,7 +157,7 @@ function boundaries(mesh::TriMesh)::Vector{Vector{Int64}}
 			a, b = bGraph[loop[end]]
 			push!(loop, a == loop[end-1] ? b : a)
 		end
-		push!(bPolys, loop)
+		push!(bPolys, loop[1:end-1])
 		delete!.(Ref(bGraph), loop[2:end])
 	end
 
@@ -167,17 +167,19 @@ end
 
 """Compute the Laplace matrix for the mesh connectivity (type=:graph) or for the mesh surface (type=:mesh), 
 with optional dirichlet nodes and symmetrization for homogeneous B.C.s """
-function laplacian(mesh::TriMesh; type::Symbol=:graph, dirichletNodes::Vector{Int64}=Int64[], homogeneous::Bool=false)::SparseMatrixCSC{Float64}
+function laplacian(mesh::TriMesh, type::Symbol; dirichletNodes::Vector{Int64}=Int64[], homogeneous::Bool=false)::SparseMatrixCSC{Float64}
 	@assert type in (:graph, :mesh) "type must be :graph or :mesh"
-
+	
 	L = spzeros(length(mesh.nodes), length(mesh.nodes))
 
 	if type == :graph
 		for (a, b, c) in mesh.triangles
-			for (i,j) in [(a,b), (b,c), (c,a)]
-				L[i,j] = -1
-				L[j,i] = -1
-			end
+			L[a,b] = -1
+			L[b,a] = -1
+			L[b,c] = -1
+			L[c,b] = -1
+			L[c,a] = -1
+			L[a,c] = -1
 		end
 	elseif type == :mesh
 		baryAreas = zeros(length(mesh.nodes))
@@ -196,17 +198,18 @@ function laplacian(mesh::TriMesh; type::Symbol=:graph, dirichletNodes::Vector{In
 		L += L'
 	end
 
-	L -= spdiagm(sum.(eachrow(L)))
+	L -= spdiagm(vec(sum(L, dims=1)))
 
-	for i in dirichletNodes
-		L[i, :] .= 0
-		if homogeneous
-			L[:, i] .= 0
+	if length(dirichletNodes) > 0
+		for i in dirichletNodes
+			L[i, :] .= 0
+			if homogeneous
+				L[:, i] .= 0
+			end
+			L[i, i] = 1
 		end
-		L[i, i] = 1
+		dropzeros!(L)
 	end
-
-	dropzeros!(L)
 
 	return L
 end
