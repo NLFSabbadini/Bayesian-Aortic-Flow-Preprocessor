@@ -146,7 +146,7 @@ end
 
 
 """Construct an approximate minimal surface mesh with the skeletonSegments as boundaries, using harmonic mapping"""
-function main(skeletonSegmentsPath::String, skeletonMeshPath::String, krylovDim::Int64, centerlineRes::Float64)
+function main(skeletonSegmentsPath::String, skeletonMeshPath::String, krylovDim::Int64)
 	chains = h5open(skeletonSegmentsPath, "r") do file
 		[collect.(eachcol(Float64.(read(file[string(i)])))) for i in 0:4]
 	end
@@ -160,4 +160,4 @@ function main(skeletonSegmentsPath::String, skeletonMeshPath::String, krylovDim:
 end
 
 
-main(ARGS[1:2]..., parse(Int64, ARGS[3]), parse(Float64, ARGS[4]))
+main(ARGS[1:2]..., parse(Int64, ARGS[3]))
