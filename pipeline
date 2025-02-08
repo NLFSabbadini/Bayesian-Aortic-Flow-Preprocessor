@@ -4,8 +4,7 @@ make -f - "$@" <<'EOF'
 #Global variables
 procEdgeLength:=0.5
 meshEdgeLength:=0.5
-krylovDim:=400
-centerlineRes:=0.1
+numHarmonics:=400
 minWavelength:=10
 radialUncertainty:=0.1
 inletUncertainty:=0.1
@@ -15,13 +14,14 @@ numInletSamples:=0
 
 #Working directory and target names
 dir:=.
-raw:=$(dir)/raw.stl
+raw:=$(dir)/rawSurface.stl
 inletVectors:=$(dir)/inletVectors.npy
 clipped:=$(dir)/clipped.stl
-harmonics:=$(dir)/surfaceData/harmonics.hdf5
-skeletonEdges:=$(dir)/surfaceData/skeletonEdges.hdf5
-skeletonMesh:=$(dir)/surfaceData/skeletonMesh.stl
-radialVectors:=$(dir)/surfaceData/radialVectors.hdf5
+surfaceDataDir:=$(dir)/surfaceData
+harmonics:=$(surfaceDataDir)/harmonics.hdf5
+skeletonEdges:=$(surfaceDataDir)/skeletonEdges.hdf5
+skeletonMesh:=$(surfaceDataDir)/skeletonMesh.stl
+radialVectors:=$(surfaceDataDir)/radialVectors.hdf5
 surfaceSampleDir:=$(dir)/surfaceSamples
 surfaceSample:=$(surfaceSampleDir)/lambda$(minWavelength)sigma$(radialUncertainty)_%g.stl
 surfaceSamples:=$(shell seq -f"$(surfaceSample)" 0 $(numSurfaceSamples))
@@ -40,25 +40,31 @@ inletProfiles:=$(shell seq -f"$(inletProfile)" 0 $(numSurfaceSamples))
 all: $(inletProfiles) $(inletMeshes) $(volumeMeshes)
 
 $(inletProfileDir)/%sigma$(inletUncertainty)_$(numInletSamples).zip: $(inletMeshDir)/%.stl $(inletVectors)
+	mkdir $(inletProfileDir)
 	julia julia/inletSamples.jl $^ $@ $(inletUncertainty) $(numInletSamples)
 
 $(inletMeshDir)/%.stl $(volumeMeshDir)/%.msh &: $(surfaceSampleDir)/%.stl $(inletVectors)
+	mkdir $(inletMeshDir)
+	mkdir $(volumeMeshDir)
 	vmtkpy python-vmtk/numericalMesh.py $^ $(volumeMeshDir)/$*.msh $(inletMeshDir)/$*.stl $(meshEdgeLength)
 
 $(surfaceSamples) &: $(clipped) $(radialVectors) $(harmonics)
+	mkdir $(surfaceSampleDir)
 	julia julia/surfaceSamples.jl $^ $(surfaceSample) $(procEdgeLength) $(minWavelength) $(radialUncertainty) $(numSurfaceSamples)
 
 $(harmonics): $(clipped)
-	julia julia/surfaceHarmonics.jl $^ $@ $(krylovDim)
+	mkdir $(surfaceDataDir)
+	julia julia/surfaceHarmonics.jl $^ $@ $(numHarmonics)
 
 $(radialVectors): $(clipped) $(skeletonMesh)
 	vmtkpy python-vmtk/skeletonProjection.py $^ $@
 
 $(skeletonMesh): $(skeletonEdges)
-	julia julia/skeletonMesh.jl $^ $@ $(krylovDim) $(centerlineRes)
+	julia julia/skeletonMesh.jl $^ $@ $(numHarmonics)
 
 $(skeletonEdges): $(clipped)
-	vmtkpy python-vmtk/skeletonEdges.py $^ $@ $(centerlineRes)
+	mkdir $(surfaceDataDir)
+	vmtkpy python-vmtk/skeletonEdges.py $^ $@ $(shell echo "$(procEdgeLength)/3" | bc -l)
 
 $(clipped): $(raw) $(inletVectors)
 	vmtkpy python-vmtk/clipInletRemesh.py $^ $@ $(procEdgeLength)
