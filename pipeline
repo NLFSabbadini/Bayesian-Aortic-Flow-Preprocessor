@@ -57,7 +57,7 @@ $(harmonics): $(clipped)
 	julia julia/surfaceHarmonics.jl $^ $@ $(numHarmonics)
 
 $(radialVectors): $(clipped) $(skeletonMesh)
-	vmtkpy python-vmtk/skeletonProjection.py $^ $@
+	vmtkpy python-vmtk/radialVectors.py $^ $@
 
 $(skeletonMesh): $(skeletonEdges)
 	julia julia/skeletonMesh.jl $^ $@ $(numHarmonics)
