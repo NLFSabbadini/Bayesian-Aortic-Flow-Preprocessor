@@ -1,4 +1,4 @@
-# Statistical Vascular CFD Pre-Processor
+# Statistical Vascular CFD Preprocessor
 A data processing pipeline for the introduction and propagation to CFD meshes and BCs of measurement uncertainties in vascular geometries and associated inlet flow fields.
 
 ## Structure
