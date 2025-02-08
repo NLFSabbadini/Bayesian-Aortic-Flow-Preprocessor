@@ -6,7 +6,6 @@ using IterTools
 using NPZ
 using Printf
 using ZipFile
-using Plots; pythonplot()
 
 
 """Convenience types"""
