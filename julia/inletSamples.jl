@@ -6,15 +6,18 @@ using IterTools
 using NPZ
 using Printf
 using ZipFile
+using Plots; pythonplot()
 
 
 """Convenience types"""
 AbstractRn = AbstractVector{<:AbstractFloat}
 AbstractRns = AbstractVector{<:AbstractRn}
+AbstractRnn = AbstractMatrix{<:AbstractFloat}
+AbstractRnns = AbstractVector{<:AbstractRnn}
 
 
 """Compute the cross Gram matrix for vector lists xs and ys, given kernel function k"""
-function crossGramian(xs::T, ys::T, k::Function)::Matrix{Float64} where T <: AbstractRns
+function crossGramian(xs::T, ys::U, k::Function)::Matrix{Float64} where {T<:AbstractRns, U<:AbstractRns}
 	K = Matrix{Float64}(undef, length(xs), length(ys))
 	for i in 1:length(xs), j in 1:length(ys)
 		K[i,j] = k(xs[i], ys[j])
@@ -23,14 +26,14 @@ function crossGramian(xs::T, ys::T, k::Function)::Matrix{Float64} where T <: Abs
 end
 
 
-"""Cross Gram matrix for a distance kernel"""
-function distanceCrossGramian(xs::T, ys::T)::Matrix{Float64} where T <: AbstractRns
+"""Cross Gram matrix for distance kernel"""
+function distanceCrossGramian(xs::T, ys::U)::Matrix{Float64} where {T<:AbstractRns, U<:AbstractRns}
 	return crossGramian(xs, ys, (x, y) -> norm(x - y))
 end
 
 
-"""Cross Gram matrix for a Gaussian kernel, given some standard deviation"""
-function gaussCrossGramian(xs::T, ys::T, sigma::Float64)::Matrix{Float64} where T <: AbstractRns
+"""Cross Gram matrix for Gaussian kernel with std sigma"""
+function gaussCrossGramian(xs::T, ys::U, sigma::Float64)::Matrix{Float64} where {T<:AbstractRns, U<:AbstractRns}
 	return crossGramian(xs, ys, (x, y) -> exp(-0.5*norm(x - y)^2/sigma^2))
 end
 
@@ -38,7 +41,7 @@ end
 """Ridge regularize a weakly positive definite matrix for numerical tractability,
 using a grid search to approximate the minimal effective regularization parameter"""
 function optimalWPDRidgeReg(M::Matrix{Float64}, n::Int64=1000)::Matrix{Float64}
-	regs = [0; collect(logrange(2^(-52), maximum(eigen(M).values)*1e-7, n))]
+	regs = [0; logrange(2^(-52), maximum(eigen(M).values)*1e-7, n)] #[0, machine epsilon ... dynamic range 1e7]
 	for reg in regs
 		M_reg = M + reg*I
 		if isposdef(M_reg)
@@ -48,33 +51,17 @@ function optimalWPDRidgeReg(M::Matrix{Float64}, n::Int64=1000)::Matrix{Float64}
 end
 
 
-"""Ridge regularize a weakly positive definite matrix for numerical tractability,
-using a grid search to approximate the effective regularization parameter r which minimizes
-the reconstruction error ||X - M inv(M + r*I) X||, where X = [x1 x2 ... xn]"""
-function optimalWPDRidgeReg(M::Matrix{Float64}, X::Matrix{Float64}, n::Int64=1000)::Matrix{Float64}
-	regs = [0, collect(logrange(2^(-52), maximum(eigen(M).values)*1e-7, n))]
-	errors = fill(Inf, length(regs))
-	for (i, reg) in enumerate(regs)
-		M_reg = M + reg*I
-		if isposdef(M_reg)
-			errors[i] = norm(X - *(M, inv(M_reg), X))
-		end
-	end
-	return M + I*regs[argmin(errors)]
-end
-
-
 """Model for the marginal covariance matrix of 4D Flow MRI vectors, as found in
 O. Friman et. al. 2011 'Probabilistic 4D blood ﬂow tracking and uncertainty estimation'.
 Dependence on v is kept as a place holder for future improved models"""
-function marginalCovariance(v::T, sigma::Float64)::Matrix{Float64} where T <: AbstractRn
+function marginalCovariance(v::T, sigma::Float64)::Matrix{Float64} where T<:AbstractRn
 	return sigma^2 * [1 .5 .5; .5 1 .5; .5 .5 1]
 end
 
 
 """Compute the joint covariance matrix for a set of vector valued random variables, given their marginal
-covariance matrices and a scalar joint covariance matrix applying to the vector components"""
-function jointVectorCovariance(vecCovs::Vector{Matrix{Float64}}, jointCompCov::Matrix{Float64}, separateComponents::Bool=true)::Matrix{Float64}
+covariance matrices and a joint covariance matrix for the scalar components"""
+function jointVectorCovariance(vecCovs::Vector{Matrix{Float64}}, jointCompCov::Matrix{Float64})::Matrix{Float64}
 	d, n = (size(vecCovs[1])[1], size(jointCompCov)[1])
 	S = Matrix{Float64}(undef, n*d, n*d)
 	blocks = [(1:d).+d*k for k in 0:n-1]
@@ -84,31 +71,29 @@ function jointVectorCovariance(vecCovs::Vector{Matrix{Float64}}, jointCompCov::M
 		S[blocks[i], blocks[j]] = sqVecCovs[i] * sqVecCovs[j] * jointCompCov[i, j]
 	end
 
-	if separateComponents
-		perm = vcat(range.(1:d, n*d, step=d)...)
-		S = S[perm, perm]
-	end
-
 	return S
 end
 
 
-"""Construct a vector valued function where each entry is a different weighted sum of a set of Gaussians, 
-given their radius sigma, their centers mu, and their weights for each entry"""
-function sumOfGaussians(sigma::Float64, mu::T, W::Matrix{Float64})::Function where T <: AbstractRns
-	function f(x::U)::Vector{Float64} where U <: AbstractRn
-		fx = zeros(size(W)[2])
-		for (mui, wi) in zip(mu, eachrow(W))
-			fx += wi*exp(-0.5*norm(mui - x)^2/sigma^2)
+"""Construct the RBF interpolant function for vectors ys = [y1 y2 ... yn]^T at positions xs"""
+function RBFInterpolant(xs::T, ys::U, r::Float64)::Function where {T<:AbstractRns, U<:AbstractRnn}
+	K = optimalWPDRidgeReg(gaussCrossGramian(xs, xs, r)) #Ridge regularization in case of ill-conditioning
+	W = K \ ys
+
+	function interpolant(x::V)::Vector{Float64} where V<:AbstractRn
+		y = zeros(size(W)[2])
+		for (xi, wi) in zip(xs, eachrow(W))
+			y += wi*exp(-0.5*norm(xi - x)^2/r^2)
 		end
-		return fx
+		return y
 	end
-	return f
+
+	return interpolant
 end
 
 
 """Generate .prof file contents compatible with ANSYS, describing a static velocity B.C. in 3D"""
-function ansysProfile(xs::T, vs::T)::String where T <: AbstractRns
+function ansysProfile(xs::T, vs::U)::String where {T<:AbstractRns, U<:AbstractRns}
 	return """
 	((inlet point $(length(xs)))
 	    (x
@@ -133,33 +118,39 @@ function ansysProfile(xs::T, vs::T)::String where T <: AbstractRns
 end
 
 
-"""Sample from an assumed joint distribution for 4D Flow MRI vectors and propagate to a mesh using the RBF method,
-with no-flow B.C.s approximately enforced."""
-function main(meshPath::String, vectorPath::String, outputPath::String, sigma::Float64, numSamples::Int64)::Nothing
-	vectorField = npzread(vectorPath)
-	x = collect(eachcol(vectorField[1:3,:])) #positions
-	n_x = length(x)
-	r = sum(distanceCrossGramian(x, x))/n_x^2 #average distance
-
-	mu_v = collect(eachcol(vectorField[4:6,:]))
-	Sigma_v = optimalWPDRidgeReg(
-		jointVectorCovariance(
-			marginalCovariance.(mu_v, sigma),
-			gaussCrossGramian(x, x, r)))
-	rho_v = MvNormal(vcat(mu_v...), Sigma_v)
-
+"""Sample from an assumed joint distribution for 4D Flow MRI vectors and interpolate to a mesh using the RBF method"""
+function main(meshPath::String, vectorPath::String, outputPath::String, sigma::Float64, numSamples::Int64)
 	mesh = TriMesh(meshPath)
-	c = centroids(mesh)
-	b = mesh.nodes[boundaries(mesh)[1]] #boundary nodes
-	K = optimalWPDRidgeReg(gaussCrossGramian([x; b], [x; b], r))
-	T = inv(K)[:, 1:n_x] #Transform from velocities to RBF weights, assuming no-flow b.c.s
-	ws = T * reshape(hcat(mean(rho_v), rand(rho_v, numSamples)), n_x, :) #RBF weights for each component of each sample
-	vs = gaussQuadrature(mesh, sumOfGaussians(r, [x; b], ws), Vector{Float64}) ./ areas(mesh) #mean velocity for each component of each sample on each cell
+	vectorField = npzread(vectorPath)
+	xs = collect(eachcol(vectorField[1:3,:])) #positions
 
-	zip = ZipFile.Writer(outputPath)	
+	#Construct velocity distribution at datapoints
+	lc = 1. #correlation length, insert heuristic
+	mu_v = reshape(vectorField[4:6,:],:)
+	Sigma_v = optimalWPDRidgeReg( #ridge regularization in case of ill-conditioning
+		jointVectorCovariance(
+			marginalCovariance.(collect.(partition(mu_v, 3)), sigma),
+			gaussCrossGramian(xs, xs, lc)))
+	rho_v = MvNormal(mu_v, Sigma_v)
+	
+	#Sample distribution and rearrange as [x1 y1 z1 ... xn yn zn]
+	vs = zeros(length(xs), 3*(numSamples+1)) #length(xs) + length(vcat(boundaries(mesh)...)) to include no-slip forcing
+	vs[:,1:3] .= transpose(reshape(mu_v, 3, :))
+	for i in 1:numSamples
+		vs[:, 3*i.+(1:3)] .= transpose(reshape(rand(rho_v), 3, :))
+	end
+
+	#Construct RBF interpolant and numerically average over cells
+	r = unique(sort(reshape(distanceCrossGramian(xs, xs), :)))[2]/2 #this works, but find better heuristic?
+	vc = 1 ./ areas(mesh) .* gaussQuadrature( #RBFInterpolant(vcat(xs, boundaries(mesh)...), vs, r) to include no-slip forcing
+		mesh, RBFInterpolant(xs, vs, r), Vector{Float64})
+
+	#Write Ansys .prof files
+	cs = centroids(mesh)
+	zip = ZipFile.Writer(outputPath)
 	for (i, rng) in enumerate([k:k+2 for k in 1:3:3*(numSamples+1)])
 		profile = ZipFile.addfile(zip, "$(i).prof")
-		write(profile, ansysProfile(c, getindex.(vs, Ref(rng))))
+		write(profile, ansysProfile(cs, getindex.(vc, Ref(rng))))
 	end
 	close(zip)
 end
