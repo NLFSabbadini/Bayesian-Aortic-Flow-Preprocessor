@@ -167,19 +167,20 @@ end
 
 """Compute the Laplace matrix for the mesh connectivity (type=:graph) or for the mesh surface (type=:mesh), 
 with optional dirichlet nodes and symmetrization for homogeneous B.C.s """
-function laplacian(mesh::TriMesh, type::Symbol; dirichletNodes::Vector{Int64}=Int64[], homogeneous::Bool=false)::SparseMatrixCSC{Float64}
+function laplacian(mesh::TriMesh, type::Symbol; dirichletNodes::Vector{Int64}=Int64[], homogeneous::Bool=false, removeBoundaries::Bool=false)::SparseMatrixCSC{Float64}
 	@assert type in (:graph, :mesh) "type must be :graph or :mesh"
 	
-	L = spzeros(length(mesh.nodes), length(mesh.nodes))
+	n = length(mesh.nodes)
+	L = spzeros(n, n)
 
 	if type == :graph
 		for (a, b, c) in mesh.triangles
-			L[a,b] = -1
-			L[b,a] = -1
-			L[b,c] = -1
-			L[c,b] = -1
-			L[c,a] = -1
-			L[a,c] = -1
+			L[a,b] = 1
+			L[b,a] = 1
+			L[b,c] = 1
+			L[c,b] = 1
+			L[c,a] = 1
+			L[a,c] = 1
 		end
 	elseif type == :mesh
 		baryAreas = zeros(length(mesh.nodes))
@@ -191,7 +192,7 @@ function laplacian(mesh::TriMesh, type::Symbol; dirichletNodes::Vector{Int64}=In
 			for shift in 0:2
 				i, j, _ = circshift(nodeNums, shift)
 				ni, nj, nk = circshift(triNodes, shift)
-				L[i, j] = -dot(ni-nk, nj-nk)/(4*area)
+				L[i, j] = dot(ni-nk, nj-nk)/(4*area)
 			end
 		end
 
@@ -201,12 +202,21 @@ function laplacian(mesh::TriMesh, type::Symbol; dirichletNodes::Vector{Int64}=In
 	L -= spdiagm(vec(sum(L, dims=1)))
 
 	if length(dirichletNodes) > 0
-		for i in dirichletNodes
-			L[i, :] .= 0
+		if removeBoundaries
+			keepRange = setdiff(1:n,dirichletNodes)
 			if homogeneous
-				L[:, i] .= 0
+				L = L[keepRange, keepRange]
+			else
+				L = L[keepRange, :]
 			end
-			L[i, i] = 1
+		else 
+			for i in dirichletNodes
+				L[i, :] .= 0
+				if homogeneous
+					L[:, i] .= 0
+				end
+				L[i, i] = 1
+			end
 		end
 		dropzeros!(L)
 	end
@@ -248,22 +258,24 @@ end
 
 
 """Compute Gauss Quadrature of desired order of function f over the mesh triangles"""
-function gaussQuadrature(mesh::TriMesh, f::Function, ::Type{T}; order::Int64=2)::Vector{T} where T <: AbstractArray{<:AbstractFloat}
+function gaussQuadrature(mesh::TriMesh, order::Int64=2)::Tuple{Vector{Vector{Float64}}, Matrix{Float64}}
 	gmshWasInit = Bool(gmsh.isInitialized())
 	gmshWasInit ? nothing : gmsh.initialize()
 	refCoords, refWeights = gmsh.model.mesh.getIntegrationPoints(2, "Gauss$order")
 	gmshWasInit ? nothing : gmsh.finalize()
 
+	n = length(mesh.triangles)
+	k = length(refWeights)
 	baryCoords = reshape(refCoords, 3, :)
 	baryCoords[3,:] .= 1 .- baryCoords[1,:] .- baryCoords[2,:]
 
-	quads = T[]
-	for (indices, area) in zip(mesh.triangles, areas(mesh))
-		points = stack(mesh.nodes[indices]) * baryCoords
-		push!(quads, 2 * area * sum(f.(eachcol(points)) .* refWeights))
+	p = Vector{Vector{Float64}}(undef, n*k)
+	W = spdiagm(2*areas(mesh))*kron(spdiagm(ones(n)), transpose(refWeights))
+	for (i, indices) in enumerate(mesh.triangles)
+		p[(1:k) .+ k*(i-1)] .= eachcol(stack(mesh.nodes[indices]) * baryCoords)
 	end
 
-	return quads
+	return p, W
 end
 
 
