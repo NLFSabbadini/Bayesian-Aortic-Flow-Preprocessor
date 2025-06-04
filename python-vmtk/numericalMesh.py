@@ -82,16 +82,12 @@ def nearestConnectedRegion(dataSet, p):
 	return selecter.GetOutput()
 
 
-def writeSurfaceSTL(dataSet, fileName):
-	"""Write surface of vtkDataSet to STL file"""
+def dataSetSurface(dataSet):
+	"""Compute surface of vtkDataSet and return as vtkPolyData"""
 	surface = vtk.vtkDataSetSurfaceFilter()
 	surface.SetInputData(dataSet)
 	surface.Update()
-
-	write = vtk.vtkSTLWriter()
-	write.SetInputData(surface.GetOutput())
-	write.SetFileName(fileName)
-	write.Write()
+	return surface.GetOutput()
 
 
 def main(surfacePath, inletVectorsPath, outputVolumeMeshPath, outputInletMeshPath, meshEdgeLength):
@@ -104,10 +100,10 @@ def main(surfacePath, inletVectorsPath, outputVolumeMeshPath, outputInletMeshPat
 		BoundaryLayer=1, BoundaryLayerOnCaps=0, BoundaryLayerThicknessFactor=1, NumberOfSubLayers=5, SubLayerRatio=0.8333)
 
 	volumeMeshSplit = splitDataSetByIntArray(mesher.Mesh, mesher.CellEntityIdsArrayName, exclude=[0, 1]) #split mesh into regions defined by vmtkMeshGenerator, excluding the internal volume and original surface
-	inletMesh = nearestConnectedRegion(volumeMeshSplit, np.load(inletVectorsPath)[0:3, 1]) #get contiguous region closest to first inlet vector position
+	inletMesh = dataSetSurface(nearestConnectedRegion(volumeMeshSplit, np.load(inletVectorsPath)[0:3, 1])) #get contiguous region closest to first inlet vector position
 
 	vmtkTool.run("MeshWriter", Mesh=mesher.Mesh, Format="fluent", OutputFileName=outputVolumeMeshPath) #save volume mesh
-	writeSurfaceSTL(inletMesh, outputInletMeshPath) #save inlet surface mesh
+	vmtkTool.run("SurfaceWriter", Surface=inletMesh, OutputFileName=outputInletMeshPath) #save inlet surface mesh
 
 
 main(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], float(sys.argv[5]))
