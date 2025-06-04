@@ -6,6 +6,8 @@ using KrylovKit
 using Base.Iterators
 using HDF5
 using Distributions
+using Kronecker
+using KrylovKit
 
 
 """Convenience types"""
@@ -21,70 +23,74 @@ function planarLeastSquares(xs::T)::Vector{Float64} where T <: AbstractRns
 end
 
 
-"""Project points xs onto plane w^T x = 1 in place"""
-function planarProjection!(w::Vector{Float64}, nodes::T)::Nothing where T <: AbstractRns
-	p = w/dot(w,w)
-	P = -p*transpose(w)
-	nodes .+= Ref(p) .+ Ref(P) .* nodes
-	return nothing
+"""Compute an affine basis for plane w^T x = 1"""
+function planarBasis(w::Vector{Float64})::Tuple{Matrix{Float64}, Vector{Float64}}
+	P = zeros(3, 2)
+	P[:, 1] = normalize!(cross(w, [0, 0, 1]))
+	P[:, 2] = cross(P[:,1], w/norm(w))
+	return P, w/dot(w,w)
 end
 
 
-"""Model for the marginal covariance of surface nodes, given their radial normal"""
-function marginalCovariance(n::T, sigma::Float64, tau::Float64) where T <: AbstractRn
-	return Symmetric(tau^2*I + (sigma^2 - tau^2)*n*transpose(n)) #Get rid of numerical asymmetry
-end
-
-
-"""Compute the joint Gaussian distribution of N coefficients per basis vector,
-obtained by probability scoring with entry-wise N-variate Gaussians of given means and covariances"""
-function basisJointGaussianND(basis::T, mus::U, sigmas::V) where {T <: AbstractRnn, U <: AbstractRns, V <: AbstractRnns}
-	d_x = length(mus[1])
-	n_x = size(basis)[1]
-
-	invSigmas_x = spzeros(d_x*n_x, d_x*n_x)
-	blocks = [k:k+d_x-1 for k in 1:d_x:d_x*n_x]
-	for (block, sigma) in zip(blocks, sigmas)
-		invSigmas_x[block,block] .= inv(sigma)
+"""Compute the bayesian posterior distribution for a given affine basis Aw+b conditioned on x, 
+assuming a diagonal, zero mean Gaussian and a diagonal Gaussian measurement likelihood"""
+function posteriorDistribution(A::T1, b::T2, sigmasP::T3, sigmasM::T4, x::T5) where {T1 <: AbstractRnn, T2 <: AbstractRn, T3 <: AbstractRn, T4 <: AbstractRn, T5 <: AbstractRn}
+	n, m = size(A)
+	Z = zeros(n+m, m)
+	Z[1:n,:] .= A
+	for i in 1:n
+		Z[i,:] ./= sigmasM[i]
 	end
-
-	B = kron(basis, Matrix(1.0I, d_x, d_x))
-	C = transpose(sparse(cholesky(Symmetric(invSigmas_x)).L)) * B
-	Sigma_phi = Symmetric(cholesky(Symmetric(transpose(C)*C)) \ I)
-	mu_phi = *(Sigma_phi, transpose(B), invSigmas_x, reduce(vcat, mus))
-
-	return MvNormal(mu_phi, Sigma_phi)
+	for i in 1:m
+		Z[n+i,i] = 1/sigmasP[i]
+	end
+	U = qr(Z).R \ I
+	Sigma = U*transpose(U)
+	mu = *(Sigma, transpose(A), (x-b)./sigmasM.^2)
+	return MvNormal(mu, Sigma)
 end
 
 
-"""Given radial coordinates and harmonics for a surface, sample from the space of surfaces with a set minimum wavelength,
-such that a Gaussian marginal distribution with set variance is approximated around each original vertex"""
-function main(surfacePath::String, radialCoordsPath::String, harmonicsPath::String, outputPathTemp::String, 
-edgeLength::Float64, minWavelength::Float64, radialUncertainty::Float64, numRealizations::Int64)::Nothing
+"""Sample from the space of surfaces with a set minimum wavelength, such that a Gaussian marginal distribution with 
+set variance is approximated around each original vertex"""
+function main(surfacePath::String, harmonicsPath::String, outputPathTemp::String, 
+edgeLength::Float64, surfaceUncertainty::Float64, numRealizations::Int64)::Nothing
 	surface = TriMesh(surfacePath)
-	normals, radii = h5open(radialCoordsPath, "r") do file
-		(collect(eachcol(read(file["normals"]))), read(file["radii"]))
+	n = 3*length(surface.nodes)
+
+	#Interior harmonic basis
+	basis, frequencies = h5open(harmonicsPath, "r") do file
+		(kron(read(file["harmonics"]),Matrix(1.0I,3,3)), 
+			kron(read(file["frequencies"]),ones(3)))
 	end
-	freqs, modes = h5open(harmonicsPath, "r") do file
-		(read(file["freqs"]), read(file["modes"]))
+	offset = zeros(n)
+
+	#Boundary harmonic basis (disable if using unconstrained harmonics)
+	boundaryFrequencies, extendedBoundaryHarmonics = h5open(harmonicsPath, "r") do file
+		ids = [start:stop for (start, stop) in read(file["boundaryHarmonicIds"])]
+		(kron(read(file["boundaryFrequencies"]),ones(2)),
+			view.(Ref(read(file["extendedBoundaryHarmonics"])),:,ids))
 	end
-
-	maxFreq = (2*pi*edgeLength/minWavelength)^2
-	basis = view(modes, :, filter!(i -> freqs[i] <= maxFreq, collect(1:length(freqs))))
-	rho_phi = basisJointGaussianND(basis, 
-		[fill(r, 1) for r in radii], #N-dimensional (position) vectors also supported!
-		[fill(radialUncertainty^2, 1, 1) for r in radii]) #Varying uncertainty also supported!
-
-	boundaryIds = boundaries(surface)
-	boundaryPlanes = planarLeastSquares.(view.(Ref(surface.nodes), boundaryIds))
-
+	boundaryBases = []
+	for (H,ids) in zip(extendedBoundaryHarmonics,boundaries(surface))
+		P, p = planarBasis(planarLeastSquares(surface.nodes[ids]))
+		offset += kron(H[:,1],sqrt(length(ids))*p) #extension of constant boundary modes, with boundaries set at respective plane offsets 
+		push!(boundaryBases, kron(H,P))
+	end
+	basis = hcat(basis, boundaryBases...)
+	frequencies = vcat(frequencies, boundaryFrequencies)
+	
+	#Distribution
+	alpha, beta = (0.028677245760023833, 6.212056127641208) #prior power law parameters
+	rho = posteriorDistribution(basis, offset, sqrt(alpha)*frequencies.^(-beta/2), fill(surfaceUncertainty, n), reduce(vcat, surface.nodes))
+	
+	#Sampling
 	for i in 0:numRealizations
-		sampleWeights = i > 0 ? rand(rho_phi) : mean(rho_phi)
-		sampleNodes = surface.nodes .+ normals .* (basis * sampleWeights .- radii)
-		planarProjection!.(boundaryPlanes, view.(Ref(sampleNodes), boundaryIds)) #Just for safety
+		sampleWeights = i > 0 ? rand(rho) : mean(rho)
+		sampleNodes = collect(partition(basis*sampleWeights+offset,3))
 		save(TriMesh(sampleNodes, surface.triangles), replace(outputPathTemp, "%g"=>i))
 	end
 end
 
 
-main(ARGS[1:4]..., parse.(Float64, ARGS[5:7])..., parse(Int64, ARGS[8]))
+main(ARGS[1:3]..., parse.(Float64, ARGS[4:5])..., parse(Int64, ARGS[6]))
