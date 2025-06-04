@@ -1,11 +1,15 @@
 include("TriMeshes.jl")
 using .TriMeshes
 using LinearAlgebra
+using KrylovKit
 using Distributions
 using IterTools
 using NPZ
 using Printf
 using ZipFile
+using SparseArrays
+using CairoMakie
+using IterTools
 
 
 """Convenience types"""
@@ -13,6 +17,20 @@ AbstractRn = AbstractVector{<:AbstractFloat}
 AbstractRns = AbstractVector{<:AbstractRn}
 AbstractRnn = AbstractMatrix{<:AbstractFloat}
 AbstractRnns = AbstractVector{<:AbstractRnn}
+
+
+"""Compute the cross Gram matrix for vector lists xs and ys, given kernel function k"""
+function gramian(xs::T, k::Function)::Matrix{Float64} where T<:AbstractRns
+	K = Matrix{Float64}(undef, length(xs), length(xs))
+	for i in 1:length(xs)
+		K[i,i] = k(xs[i],xs[i])
+	end
+	for i in 2:length(xs), j in 1:i-1
+		K[i,j] = k(xs[i], xs[j])
+		K[j,i] = k(xs[i], xs[j])
+	end
+	return K
+end
 
 
 """Compute the cross Gram matrix for vector lists xs and ys, given kernel function k"""
@@ -25,18 +43,6 @@ function crossGramian(xs::T, ys::U, k::Function)::Matrix{Float64} where {T<:Abst
 end
 
 
-"""Cross Gram matrix for distance kernel"""
-function distanceCrossGramian(xs::T, ys::U)::Matrix{Float64} where {T<:AbstractRns, U<:AbstractRns}
-	return crossGramian(xs, ys, (x, y) -> norm(x - y))
-end
-
-
-"""Cross Gram matrix for Gaussian kernel with std sigma"""
-function gaussCrossGramian(xs::T, ys::U, sigma::Float64)::Matrix{Float64} where {T<:AbstractRns, U<:AbstractRns}
-	return crossGramian(xs, ys, (x, y) -> exp(-0.5*norm(x - y)^2/sigma^2))
-end
-
-
 """Ridge regularize a weakly positive definite matrix for numerical tractability,
 using a grid search to approximate the minimal effective regularization parameter"""
 function optimalWPDRidgeReg(M::Matrix{Float64}, n::Int64=1000)::Matrix{Float64}
@@ -44,6 +50,7 @@ function optimalWPDRidgeReg(M::Matrix{Float64}, n::Int64=1000)::Matrix{Float64}
 	for reg in regs
 		M_reg = M + reg*I
 		if isposdef(M_reg)
+			println(reg)
 			return M_reg
 		end
 	end
@@ -74,23 +81,6 @@ function jointVectorCovariance(vecCovs::Vector{Matrix{Float64}}, jointCompCov::M
 end
 
 
-"""Construct the RBF interpolant function for vectors ys = [y1 y2 ... yn]^T at positions xs"""
-function RBFInterpolant(xs::T, ys::U, r::Float64)::Function where {T<:AbstractRns, U<:AbstractRnn}
-	K = optimalWPDRidgeReg(gaussCrossGramian(xs, xs, r)) #Ridge regularization in case of ill-conditioning
-	W = K \ ys
-
-	function interpolant(x::V)::Vector{Float64} where V<:AbstractRn
-		y = zeros(size(W)[2])
-		for (xi, wi) in zip(xs, eachrow(W))
-			y += wi*exp(-0.5*norm(xi - x)^2/r^2)
-		end
-		return y
-	end
-
-	return interpolant
-end
-
-
 """Generate .prof file contents compatible with ANSYS, describing a static velocity B.C. in 3D"""
 function ansysProfile(xs::T, vs::U)::String where {T<:AbstractRns, U<:AbstractRns}
 	return """
@@ -117,39 +107,78 @@ function ansysProfile(xs::T, vs::U)::String where {T<:AbstractRns, U<:AbstractRn
 end
 
 
+function planarLeastSquares(xs::T)::Vector{Float64} where T <: AbstractRns
+	return mapreduce(x -> x * transpose(x), +, xs) \ sum(xs)
+end
+
+
+function planarProjection(w::Vector{Float64}, xs::T)::Vector{Vector{Float64}} where T <: AbstractRns
+	p = w/dot(w,w)
+	P = I - w*transpose(p)
+	return Ref(P) .* xs .+ Ref(p)
+end
+
+
+"""Compute an affine basis for plane w^T x = 1"""
+function planarBasis(w::Vector{Float64})::Matrix{Float64}
+	P = zeros(3, 2)
+	P[:, 1] = normalize!(cross(w, [0, 0, 1]))
+	P[:, 2] = cross(P[:,1], w/norm(w))
+	return transpose(P)
+end
+
+
 """Sample from an assumed joint distribution for 4D Flow MRI vectors and interpolate to a mesh using the RBF method"""
 function main(meshPath::String, vectorPath::String, outputPath::String, sigma::Float64, numSamples::Int64)
 	mesh = TriMesh(meshPath)
 	vectorField = npzread(vectorPath)
-	xs = collect(eachcol(vectorField[1:3,:])) #positions
+	n = size(vectorField)[2]
 
-	#Construct velocity distribution at datapoints
-	lc = 1. #correlation length, insert heuristic
-	mu_v = reshape(vectorField[4:6,:],:)
-	Sigma_v = optimalWPDRidgeReg( #ridge regularization in case of ill-conditioning
-		jointVectorCovariance(
-			marginalCovariance.(collect.(partition(mu_v, 3)), sigma),
-			gaussCrossGramian(xs, xs, lc)))
-	rho_v = MvNormal(mu_v, Sigma_v)
-	
-	#Sample distribution and rearrange as [x1 y1 z1 ... xn yn zn]
-	vs = zeros(length(xs), 3*(numSamples+1)) #length(xs) + length(vcat(boundaries(mesh)...)) to include no-slip forcing
-	vs[:,1:3] .= transpose(reshape(mu_v, 3, :))
-	for i in 1:numSamples
-		vs[:, 3*i.+(1:3)] .= transpose(reshape(rand(rho_v), 3, :))
+	#Construct posterior distribution
+	mu_l = reshape(vectorField[4:6,:],:) #likelihood mean
+	Sigma_l = zeros(3*n,3*n) #likelihood covariance
+	for block in collect.(partition(1:3*n, 3))
+		Sigma_l[block,block] .= marginalCovariance(ones(3), sigma^2)
 	end
+	rho = MvNormal(mu_l, Symmetric(Sigma_l)) #uniform prior for now
 
-	#Construct RBF interpolant and numerically average over cells
-	r = unique(sort(reshape(distanceCrossGramian(xs, xs), :)))[2]/2 #this works, but find better heuristic?
-	vc = 1 ./ areas(mesh) .* gaussQuadrature( #RBFInterpolant(vcat(xs, boundaries(mesh)...), vs, r) to include no-slip forcing
-		mesh, RBFInterpolant(xs, vs, r), Vector{Float64})
+	#Set up masked RBF interpolation
+	xs = collect(eachcol(vectorField[1:3,:]))
+	ps, W = gaussQuadrature(mesh) #quadrature points and weight matrix
+	w = planarLeastSquares(xs) #inlet plane
+
+	maskMesh = TriMesh(planarProjection(w, mesh.nodes[boundaries(mesh)[1]])) #mesh from projected boundary loop
+	maskBnd = boundaries(maskMesh)[1]
+	maskInt = setdiff(1:length(maskMesh.nodes), maskBnd)
+	L = laplacian(maskMesh, :mesh, dirichletNodes=maskBnd, homogeneous=true, removeBoundaries=true)
+	_, vecs, _ = eigsolve(L, length(maskInt), 1, :LR, krylovdim=31) #solve for fundamental harmonic h0
+	h0 = zeros(length(mesh.nodes))
+	h0[maskInt] .= abs.(vecs[1])
+	mask = ys -> linearInterpolation(maskMesh, h0, planarProjection(w, ys))
+	maskAtXs = mask(xs)
+	keep = maskAtXs .> 0.1*maximum(h0) #heuristic to prevent ill conditioning
+	maskAtPs = mask(ps)
+
+	r = unique(sort(reshape(gramian(xs[keep], (x,y) -> norm(x-y)), :)))[2] #this works, but find better heuristic?
+	rbfKernel = (x,y) -> exp(-0.5*norm(x - y)^2/r^2)
+	K = (maskAtXs[keep]*transpose(maskAtXs[keep])) .* gramian(xs[keep], rbfKernel)
+	T = (maskAtPs*transpose(maskAtXs[keep])) .* crossGramian(ps, xs[keep], rbfKernel)
+	Linv = cholesky(K).L \ I #inv(K) = inv(L L^T) = inv(L)^T inv(L)
+
+	#Sample distribution and interpolate
+	vSamples = zeros(n, 3*(numSamples+1))
+	vSamples[:,1:3] .= transpose(reshape(mean(rho), 3, :))
+	for i in 1:numSamples
+		vSamples[:, 3*i.+(1:3)] .= transpose(reshape(rand(rho), 3, :))
+	end
+	iSamples = *(W, T, transpose(Linv), Linv, vSamples[keep,:]) ./ areas(mesh)
 
 	#Write Ansys .prof files
 	cs = centroids(mesh)
 	zip = ZipFile.Writer(outputPath)
 	for (i, rng) in enumerate([k:k+2 for k in 1:3:3*(numSamples+1)])
 		profile = ZipFile.addfile(zip, "$(i).prof")
-		write(profile, ansysProfile(cs, getindex.(vc, Ref(rng))))
+		write(profile, ansysProfile(cs, eachrow(iSamples[:,rng])))
 	end
 	close(zip)
 end
