@@ -1,13 +1,12 @@
 #!/bin/bash
 make -f - "$@" <<'EOF'
 
+
 #Global variables
-procEdgeLength:=0.5
+procEdgeLength:=1.0
 meshEdgeLength:=0.5
-numHarmonics:=400
-minWavelength:=10
-radialUncertainty:=0.1
-inletUncertainty:=0.1
+surfaceUncertainty:=0.5
+inletUncertainty:=10
 numSurfaceSamples:=0
 numInletSamples:=0
 
@@ -17,54 +16,39 @@ dir:=.
 raw:=$(dir)/rawSurface.stl
 inletVectors:=$(dir)/inletVectors.npy
 clipped:=$(dir)/clipped.stl
-surfaceDataDir:=$(dir)/surfaceData
-harmonics:=$(surfaceDataDir)/harmonics.hdf5
-skeletonEdges:=$(surfaceDataDir)/skeletonEdges.hdf5
-skeletonMesh:=$(surfaceDataDir)/skeletonMesh.stl
-radialVectors:=$(surfaceDataDir)/radialVectors.hdf5
+harmonics:=$(dir)/harmonics_h$(procEdgeLength).hdf5
 surfaceSampleDir:=$(dir)/surfaceSamples
-surfaceSample:=$(surfaceSampleDir)/lambda$(minWavelength)sigma$(radialUncertainty)_%g.stl
+surfaceSample:=$(surfaceSampleDir)/h$(procEdgeLength)_sigma$(surfaceUncertainty)_%g.stl
 surfaceSamples:=$(shell seq -f"$(surfaceSample)" 0 $(numSurfaceSamples))
 volumeMeshDir:=$(dir)/volumeMeshes
-volumeMesh:=$(volumeMeshDir)/lambda$(minWavelength)sigma$(radialUncertainty)_%g.msh
+volumeMesh:=$(volumeMeshDir)/h$(procEdgeLength)-$(meshEdgeLength)_sigma$(surfaceUncertainty)_%g.msh
 volumeMeshes:=$(shell seq -f"$(volumeMesh)" 0 $(numSurfaceSamples))
 inletMeshDir:=$(dir)/inletMeshes
-inletMesh:=$(inletMeshDir)/lambda$(minWavelength)sigma$(radialUncertainty)_%g.stl
+inletMesh:=$(inletMeshDir)/h$(procEdgeLength)-$(meshEdgeLength)_sigma$(surfaceUncertainty)_%g.stl
 inletMeshes:=$(shell seq -f"$(inletMesh)" 0 $(numSurfaceSamples))
 inletProfileDir:=$(dir)/inletProfiles
-inletProfile:=$(inletProfileDir)/lambda$(minWavelength)sigma$(radialUncertainty)_%gsigma$(inletUncertainty)_$(numInletSamples).zip
+inletProfile:=$(inletProfileDir)/h$(procEdgeLength)-$(meshEdgeLength)_sigma$(surfaceUncertainty)-$(inletUncertainty)_%g.zip
 inletProfiles:=$(shell seq -f"$(inletProfile)" 0 $(numSurfaceSamples))
 
 
 #Recipes
 all: $(inletProfiles) $(inletMeshes) $(volumeMeshes)
 
-$(inletProfileDir)/%sigma$(inletUncertainty)_$(numInletSamples).zip: $(inletMeshDir)/%.stl $(inletVectors)
-	mkdir $(inletProfileDir)
+$(inletProfileDir)/h$(procEdgeLength)-$(meshEdgeLength)_sigma$(surfaceUncertainty)-$(inletUncertainty)_%.zip: $(inletMeshDir)/h$(procEdgeLength)-$(meshEdgeLength)_sigma$(surfaceUncertainty)_%.stl $(inletVectors)
+	mkdir -p $(inletProfileDir)
 	julia julia/inletSamples.jl $^ $@ $(inletUncertainty) $(numInletSamples)
 
-$(inletMeshDir)/%.stl $(volumeMeshDir)/%.msh &: $(surfaceSampleDir)/%.stl $(inletVectors)
-	mkdir $(inletMeshDir)
-	mkdir $(volumeMeshDir)
-	vmtkpy python-vmtk/numericalMesh.py $^ $(volumeMeshDir)/$*.msh $(inletMeshDir)/$*.stl $(meshEdgeLength)
+$(volumeMeshDir)/h$(procEdgeLength)-$(meshEdgeLength)_sigma$(surfaceUncertainty)_%.msh $(inletMeshDir)/h$(procEdgeLength)-$(meshEdgeLength)_sigma$(surfaceUncertainty)_%.stl &: $(surfaceSampleDir)/h$(procEdgeLength)_sigma$(surfaceUncertainty)_%.stl $(inletVectors)
+	mkdir -p $(inletMeshDir)
+	mkdir -p $(volumeMeshDir)
+	vmtkpy python-vmtk/numericalMesh.py $^ $(volumeMeshDir)/h$(procEdgeLength)-$(meshEdgeLength)_sigma$(surfaceUncertainty)_$*.msh $(inletMeshDir)/h$(procEdgeLength)-$(meshEdgeLength)_sigma$(surfaceUncertainty)_$*.stl $(meshEdgeLength)
 
-$(surfaceSamples) &: $(clipped) $(radialVectors) $(harmonics)
-	mkdir $(surfaceSampleDir)
-	julia julia/surfaceSamples.jl $^ $(surfaceSample) $(procEdgeLength) $(minWavelength) $(radialUncertainty) $(numSurfaceSamples)
+$(surfaceSamples) &: $(clipped) $(harmonics)
+	mkdir -p $(surfaceSampleDir)
+	julia julia/surfaceSamples.jl $^ $(surfaceSample) $(procEdgeLength) $(surfaceUncertainty) $(numSurfaceSamples)
 
 $(harmonics): $(clipped)
-	mkdir $(surfaceDataDir)
-	julia julia/surfaceHarmonics.jl $^ $@ $(numHarmonics)
-
-$(radialVectors): $(clipped) $(skeletonMesh)
-	vmtkpy python-vmtk/radialVectors.py $^ $@
-
-$(skeletonMesh): $(skeletonEdges)
-	julia julia/skeletonMesh.jl $^ $@ $(numHarmonics)
-
-$(skeletonEdges): $(clipped)
-	mkdir $(surfaceDataDir)
-	vmtkpy python-vmtk/skeletonEdges.py $^ $@ $(shell echo "$(procEdgeLength)/3" | bc -l)
+	julia julia/surfaceHarmonics.jl $^ $@
 
 $(clipped): $(raw) $(inletVectors)
 	vmtkpy python-vmtk/clipInletRemesh.py $^ $@ $(procEdgeLength)
