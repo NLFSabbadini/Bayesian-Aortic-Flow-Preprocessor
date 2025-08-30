@@ -2,7 +2,7 @@
 A data processing pipeline for the Bayesian generation of CFD meshes and inlet B.C.s from vascular geometry and inlet flow field measurements and models for their uncertainty.
 
 ## Structure
-The pipeline consists of a number of file-in-file-out CLI scripts that can be used independently, which are chained together to form a dependency tree in the **pipeline** makefile. A number of scripts rely on the Python interface for VMTK/VTK for specific mesh generation/manipulation and computational geometry algorithms, but wherever possible Julia is used. The Python scripts rely on a small convenience module **vmtkTool.py** that facilitates the use of VMTK, while the Julia scripts rely on the small **TriMeshes.jl** library for basic manipulation and computational geometry on triangular meshes. A short description of each CLI script is given below.
+The pipeline consists of a number of file-in-file-out CLI scripts, arranged into a dependency tree in the **pipeline** makefile. Mesh editing and generation tasks are performed using the Python interfaces of VMTK and VTK, while numerical computation tasks related to the statistics are performed using Julia. The Python scripts rely on a small convenience module **vmtkTool.py** that facilitates the use of VMTK, while the Julia scripts rely on the small **TriMeshes.jl** library for basic manipulation and computational geometry of triangular meshes. A short description of each CLI script is given below.
 
 1. **python-vmtk/clipInlet.py**: Clip the surface mesh so that the inlet aligns with the least-squares plane of the inlet flow vectors
 2. **julia/surfaceBasis.jl**: Construct a smooth affine basis for the surface mesh, using 10% lowest frequency interior harmonics and the harmonic extension of the planar boundary modes and their harmonic extensions
@@ -12,7 +12,7 @@ The pipeline consists of a number of file-in-file-out CLI scripts that can be us
 6. **julia/inletSamples.jl**: Construct and sample the posterior distribution of a set of measured inlet flow vectors and interpolate the samples onto the inlet boundary of the CFD mesh, using the masked RBF method to enforce no-slip B.C.s
 
 ## Files and parameters
-For the purpose of interoperability between the CLI scripts, surface meshes are saved in STL and numerical data in HDF5. The final CFD mesh and inlet BC are saved in ANSYS compatible formats. The pipeline script only expects a directory containing the unprocessed surface mesh **raw.stl** and the inlet flow vectors **inletVectors.npy**. Additionally, it takes the following parameters:
+For the purpose of interoperability between the CLI scripts, surface meshes are saved in STL and numerical data in HDF5 or JSON where human readability is necessary. The final CFD mesh and inlet BC are saved in ANSYS compatible formats. The pipeline script only expects a directory containing the unprocessed surface mesh **raw.stl** and the inlet flow vectors **inletVectors.npy**. Additionally, it takes the following parameters:
 
 - **dir**: Working directory (default: .)
 - **procEdgeLength**: Surface processing mesh edge length (default: 0.5)
