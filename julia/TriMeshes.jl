@@ -115,7 +115,7 @@ function areas(mesh::TriMesh)::Vector{Float64}
 		verts = mesh.nodes[it]
 		u = verts[2] - verts[1]
 		v = verts[3] - verts[1]
-		triAreas[i] = 1/2*sqrt(dot(u,u) + dot(v,v) - dot(u,v)^2)
+		triAreas[i] = 1/2*norm(cross(u, v))
 	end
 	return triAreas
 end
