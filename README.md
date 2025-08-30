@@ -19,5 +19,5 @@ For the purpose of interoperability between the CLI scripts, surface meshes are 
 - **meshEdgeLength**: CFD mesh edge length (default: 0.5)
 - **surfaceUncertainty**: Uncertainty in surface vertex position (default: 0.5)
 - **inletUncertainty**: 4DFlow MRI uncertainty parameter (default: 1.0)
-- **numSurfaceSamples**: Number of surface meshes to generate (default: 0, i.e. only the mean)
-- **numInletSamples**: Number of inlet flow BCs to generate per surface sample (default: 0, i.e. only the mean)
+- **numSurfaceSamples**: Number of surface meshes to generate (default: 0, i.e. only the least squares)
+- **numInletSamples**: Number of inlet flow BCs to generate per surface sample (default: 0, i.e. only the least squares)
