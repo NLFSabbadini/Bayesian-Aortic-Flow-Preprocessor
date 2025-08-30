@@ -5,7 +5,7 @@ using HDF5
 
 
 """Convenience types"""
-AbstractRn = AbstractVector{<:AbstractFloat}
+AbstractRn = AbstractVector{<:AbstractFloat} 
 AbstractRnn = AbstractMatrix{<:AbstractFloat}
 
 
