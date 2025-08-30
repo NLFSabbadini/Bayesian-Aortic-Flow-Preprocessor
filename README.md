@@ -1,4 +1,4 @@
-# Bayesian Vascular Flow Preprocessor
+# Bayesian Preprocessing for Vascular CFD
 A data processing pipeline for the introduction and propagation to CFD meshes and BCs of measurement uncertainties in vascular geometries and associated inlet flow fields.
 
 ## Structure
