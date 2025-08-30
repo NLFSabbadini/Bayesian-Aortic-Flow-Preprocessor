@@ -1,5 +1,5 @@
 # Bayesian Preprocessing for Vascular CFD
-A data processing pipeline for the introduction and propagation to CFD meshes and BCs of measurement uncertainties in vascular geometries and associated inlet flow fields.
+A data processing pipeline for the Bayesian generation of CFD meshes and inlet B.C.s from vascular geometry and inlet flow field measurements and models for their uncertainty.
 
 ## Structure
 The pipeline consists of a number of file-in-file-out CLI scripts that can be used independently, which are chained together to form a dependency tree in the **pipeline** makefile. A number of scripts rely on the Python interface for VMTK/VTK for specific mesh generation/manipulation and computational geometry algorithms, but wherever possible Julia is used. The Python scripts rely on a small convenience module **vmtkTool.py** that facilitates the use of VMTK, while the Julia scripts rely on the small **TriMeshes.jl** library for basic manipulation and computational geometry on triangular meshes. A short description of each CLI script is given below.
